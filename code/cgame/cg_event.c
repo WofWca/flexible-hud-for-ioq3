@@ -1,6 +1,7 @@
 /*
 ===========================================================================
 Copyright (C) 1999-2005 Id Software, Inc.
+Some portions Copyright (C) 2006 Neil Toronto.
 
 This file is part of Quake III Arena source code.
 
@@ -992,29 +993,77 @@ void CG_EntityEvent( centity_t *cent, vec3_t position ) {
 				VectorMA(es->origin2, 4, cg.refdef.viewaxis[1], es->origin2);
 		}
 
-		CG_RailTrail(ci, es->origin2, es->pos.trBase);
-
-		// if the end was on a nomark surface, don't make an explosion
-		if ( es->eventParm != 255 ) {
-			ByteToDir( es->eventParm, dir );
-			CG_MissileHitWall( es->weapon, es->clientNum, position, dir, IMPACTSOUND_DEFAULT );
+//unlagged - attack prediction #2
+		// if the client is us, unlagged is on server-side, and we've got it client-side
+		if ( es->clientNum == cg.predictedPlayerState.clientNum && 
+				cgs.delagHitscan && (cg_delag.integer & 1 || cg_delag.integer & 16) ) {
+			// do nothing, because it was already predicted
+			//Com_Printf("Ignoring rail trail event\n");
 		}
+		else {
+			// draw a rail trail, because it wasn't predicted
+			CG_RailTrail(ci, es->origin2, es->pos.trBase);
+	
+			// if the end was on a nomark surface, don't make an explosion
+			if ( es->eventParm != 255 ) {
+				ByteToDir( es->eventParm, dir );
+				CG_MissileHitWall( es->weapon, es->clientNum, position, dir, IMPACTSOUND_DEFAULT );
+			}
+			//Com_Printf("Non-predicted rail trail\n");
+		}
+//unlagged - attack prediction #2
 		break;
 
 	case EV_BULLET_HIT_WALL:
 		DEBUGNAME("EV_BULLET_HIT_WALL");
-		ByteToDir( es->eventParm, dir );
-		CG_Bullet( es->pos.trBase, es->otherEntityNum, dir, qfalse, ENTITYNUM_WORLD );
+//unlagged - attack prediction #2
+		// if the client is us, unlagged is on server-side, and we've got it client-side
+		if ( es->clientNum == cg.predictedPlayerState.clientNum && 
+				cgs.delagHitscan && (cg_delag.integer & 1 || cg_delag.integer & 2) ) {
+			// do nothing, because it was already predicted
+			//Com_Printf("Ignoring bullet event\n");
+		}
+		else {
+			// do the bullet, because it wasn't predicted
+			ByteToDir( es->eventParm, dir );
+			CG_Bullet( es->pos.trBase, es->otherEntityNum, dir, qfalse, ENTITYNUM_WORLD );
+			//Com_Printf("Non-predicted bullet\n");
+		}
+//unlagged - attack prediction #2
 		break;
 
 	case EV_BULLET_HIT_FLESH:
 		DEBUGNAME("EV_BULLET_HIT_FLESH");
-		CG_Bullet( es->pos.trBase, es->otherEntityNum, dir, qtrue, es->eventParm );
+//unlagged - attack prediction #2
+		// if the client is us, unlagged is on server-side, and we've got it client-side
+		if ( es->clientNum == cg.predictedPlayerState.clientNum && 
+				cgs.delagHitscan && (cg_delag.integer & 1 || cg_delag.integer & 2) ) {
+			// do nothing, because it was already predicted
+			//Com_Printf("Ignoring bullet event\n");
+		}
+		else {
+			// do the bullet, because it wasn't predicted
+			CG_Bullet( es->pos.trBase, es->otherEntityNum, dir, qtrue, es->eventParm );
+			//Com_Printf("Non-predicted bullet\n");
+		}
+//unlagged - attack prediction #2
 		break;
 
 	case EV_SHOTGUN:
 		DEBUGNAME("EV_SHOTGUN");
-		CG_ShotgunFire( es );
+//unlagged - attack prediction #2
+		// if the client is us, unlagged is on server-side, and we've got it client-side
+		if ( es->otherEntityNum == cg.predictedPlayerState.clientNum && 
+				cgs.delagHitscan && (cg_delag.integer & 1 || cg_delag.integer & 4) ) {
+			// do nothing, because it was already predicted
+			//Com_Printf("Ignoring shotgun event\n");
+		}
+		else {
+			// do the shotgun pattern, because it wasn't predicted
+			CG_ShotgunFire( es );
+			//Com_Printf("Non-predicted shotgun pattern\n");
+		}
+//unlagged - attack prediction #2
 		break;
 
 	case EV_GENERAL_SOUND:
@@ -1219,7 +1268,64 @@ void CG_EntityEvent( centity_t *cent, vec3_t position ) {
 		if ( !(es->eFlags & EF_KAMIKAZE) ) {
 			trap_S_StartSound( NULL, es->number, CHAN_BODY, cgs.media.gibSound );
 		}
-		CG_GibPlayer( cent->lerpOrigin );
+		if (cg_oldGibs.integer) {
+			CG_GibPlayerOld( cent->lerpOrigin );
+		} else {
+			int knockbackSpeed = cgs.g_gibsNewEvGibPlayerParmProtocol == 1
+				? es->eventParm * COMBAT_EV_GIB_PLAYER_ARG_DIVISOR
+				// Just use the default knockback speed for 100 damage.
+				: 100 * 1000 / COMBAT_PLAYER_MASS;
+
+			lerpFrame_t torsoAnimation = es->number == cg.snap->ps.clientNum
+				// `cent->pe.torso` appears to be not good for self.
+				? cg.predictedPlayerEntity.pe.torso
+				: cent->pe.torso;
+			vec3_t torsoAngles;
+
+			// TODO fix: things like `origin` and `angles`
+			// are not in complete sync between clients,
+			// so this seed is not always the same for all players.
+			int randSeed = es->number;
+			randSeed = Q_rand(&randSeed) + es->clientNum;
+			randSeed = Q_rand(&randSeed) + es->eventParm;
+			randSeed = Q_rand(&randSeed) + cgs.levelStartTime;
+			// TODO fix: this varies from client to client.
+			// So for now we round it to make it in sync ~95% of the time.
+			randSeed = Q_rand(&randSeed) + cg.snap->serverTime / 2048;
+			if ( ci ) {
+				randSeed = Q_rand(&randSeed) + ci->name[0];
+			}
+
+			// Torso animation angles seem to be in better sync
+			// between the local state and how others see us,
+			// and overall are closer to other player's viewangles
+			// than `cent->lerpAngles`.
+			// `cent->lerpAngles`, seems to sometimes be pointing
+			// in a completely different direction than the player's body
+			// at the time of death.
+			// Moreover, for non-self pitch seems to be always
+			// not very far from 0.
+			// This could be related to `LookAtKiller()`.
+			// Also see `CG_PlayerAngles`.
+			torsoAngles[PITCH] = torsoAnimation.pitchAngle;
+			torsoAngles[YAW] = torsoAnimation.yawAngle;
+			torsoAngles[ROLL] = 0;
+
+			if ( es->number == cg.snap->ps.clientNum ) {
+				// Apparently at this point `es->pos.trDelta` doesn't yet have
+				// the knockback from the damage that gibbed us,
+				// so we have to differentiate between self and non-self,
+				// and use `cg.predictedPlayerState.velocity`
+				// if it's ourself.
+				CG_GibPlayer( cent->lerpOrigin, torsoAngles,
+					cg.predictedPlayerState.velocity, knockbackSpeed,
+					&torsoAnimation, randSeed );
+			} else {
+				CG_GibPlayer( cent->lerpOrigin, torsoAngles,
+					es->pos.trDelta, knockbackSpeed,
+					&torsoAnimation, randSeed );
+			}
+		}
 		break;
 
 	case EV_STOPLOOPINGSOUND:

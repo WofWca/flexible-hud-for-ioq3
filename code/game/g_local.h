@@ -1,6 +1,7 @@
 /*
 ===========================================================================
 Copyright (C) 1999-2005 Id Software, Inc.
+Some portions Copyright (C) 2006 Neil Toronto.
 
 This file is part of Quake III Arena source code.
 
@@ -144,6 +145,8 @@ struct gentity_s {
 	int			health;
 
 	qboolean	takedamage;
+	// Whether to `GibEntity` after applying all the pellets of a shotgun shot.
+	qboolean	gibScheduled;
 
 	int			damage;
 	int			splashDamage;	// quad will increase this without increasing radius
@@ -230,6 +233,10 @@ typedef struct {
 #define MAX_NETNAME			36
 #define	MAX_VOTE_COUNT		3
 
+//unlagged - true ping
+#define NUM_PING_SAMPLES 64
+//unlagged - true ping
+
 // client data that stays across multiple respawns, but is cleared
 // on each level change or team change at ClientBegin()
 typedef struct {
@@ -239,6 +246,7 @@ typedef struct {
 	qboolean	initialSpawn;		// the first spawn should be at a cool location
 	qboolean	predictItemPickup;	// based on cg_predictItems userinfo
 	qboolean	pmoveFixed;			//
+	int			cg_gibsBetterCameraOnGib;
 	char		netname[MAX_NETNAME];
 	int			maxHealth;			// for handicapping
 	int			enterTime;			// level.time the client entered the game
@@ -246,7 +254,38 @@ typedef struct {
 	int			voteCount;			// to prevent people from constantly calling votes
 	int			teamVoteCount;		// to prevent people from constantly calling votes
 	qboolean	teamInfo;			// send team overlay updates?
+//unlagged - client options
+	// these correspond with variables in the userinfo string
+	int			delag;
+	int			debugDelag;
+	int			cmdTimeNudge;
+//unlagged - client options
+//unlagged - lag simulation #2
+	int			latentSnaps;
+	int			latentCmds;
+	int			plOut;
+	usercmd_t	cmdqueue[MAX_LATENT_CMDS];
+	int			cmdhead;
+//unlagged - lag simulation #2
+//unlagged - true ping
+	int			realPing;
+	int			pingsamples[NUM_PING_SAMPLES];
+	int			samplehead;
+//unlagged - true ping
+	qboolean	cg_autoAttack;
 } clientPersistant_t;
+
+//unlagged - backward reconciliation #1
+// the size of history we'll keep
+#define NUM_CLIENT_HISTORY 17
+
+// everything we need to know to backward reconcile
+typedef struct {
+	vec3_t		mins, maxs;
+	vec3_t		currentOrigin;
+	int			leveltime;
+} clientHistory_t;
+//unlagged - backward reconciliation #1
 
 
 // this structure is cleared on each ClientSpawn(),
@@ -263,9 +302,15 @@ struct gclient_s {
 
 	qboolean	noclip;
 
+//unlagged - smooth clients #1
+	// this is handled differently now
+/*
 	int			lastCmdTime;		// level.time of last usercmd_t, for EF_CONNECTION
 									// we can't just use pers.lastCommand.time, because
 									// of the g_sycronousclients case
+*/
+//unlagged - smooth clients #1
+
 	int			buttons;
 	int			oldbuttons;
 	int			latched_buttons;
@@ -295,10 +340,13 @@ struct gclient_s {
 	int			inactivityTime;		// kick players when time > this
 	qboolean	inactivityWarning;	// qtrue if the five seoond warning has been given
 	int			rewardTime;			// clear the EF_AWARD_IMPRESSIVE, etc when time > this
+	int			autoAttackTimer;	// See `cg_autoAttack`.
 
 	int			airOutTime;
 
 	int			lastKillTime;		// for multiple kill rewards
+
+	int			deathTime;			// 0 if alive
 
 	qboolean	fireHeld;			// used for hook
 	gentity_t	*hook;				// grapple hook if out
@@ -317,6 +365,26 @@ struct gclient_s {
 #endif
 
 	char		*areabits;
+
+//unlagged - backward reconciliation #1
+	// the serverTime the button was pressed
+	// (stored before pmove_fixed changes serverTime)
+	int			attackTime;
+	// the head of the history queue
+	int			historyHead;
+	// the history queue
+	clientHistory_t	history[NUM_CLIENT_HISTORY];
+	// the client's saved position
+	clientHistory_t	saved;			// used to restore after time shift
+	// an approximation of the actual server time we received this
+	// command (not in 50ms increments)
+	int			frameOffset;
+//unlagged - backward reconciliation #1
+
+//unlagged - smooth clients #1
+	// the last frame number we got an update from this client
+	int			lastUpdateFrame;
+//unlagged - smooth clients #1
 };
 
 
@@ -407,6 +475,11 @@ typedef struct {
 #ifdef MISSIONPACK
 	int			portalSequence;
 #endif
+
+//unlagged - backward reconciliation #4
+	// actual time this server frame started
+	int			frameStartTime;
+//unlagged - backward reconciliation #4
 } level_locals_t;
 
 
@@ -490,6 +563,21 @@ const char *BuildShaderStateConfig( void );
 //
 qboolean CanDamage (gentity_t *targ, vec3_t origin);
 void G_Damage (gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_t dir, vec3_t point, int damage, int dflags, int mod);
+void GibEntity( gentity_t *self, int killer, const int damageBloodFallback );
+// The shotgun does `G_Damage` multiple times, per each pellet.
+// Normally that would mean that if the target is at 1 HP,
+// only one pellet would hit them.
+// But that would mean that the shotgun cannot gib. We don't want that,
+// so we postpone some of the effects of `G_Damage` until after
+// all the pellets have done their thing, in `ShotgunPattern`.
+// See
+// - https://github.com/ioquake/ioq3/issues/794.
+// - https://github.com/ec-/baseq3a/pull/49.
+// - https://github.com/WofWca/quake3-better-gibs-mod/issues/12.
+// - Also `glcient_s.damage_knockback`.
+#define ShouldPostponeDeathOrGib( mod ) (mod == MOD_SHOTGUN)
+#define SetDeadHeight( ent ) {ent->r.maxs[2] = DEAD_MAXS_Z;}
+#define SetFlNoKnockback( ent ) {ent->flags |= FL_NO_KNOCKBACK;}
 qboolean G_RadiusDamage (vec3_t origin, gentity_t *attacker, float damage, float radius, gentity_t *ignore, int mod);
 int G_InvulnerabilityEffect( gentity_t *targ, vec3_t dir, vec3_t point, vec3_t impactpoint, vec3_t bouncedir );
 void body_die( gentity_t *self, gentity_t *inflictor, gentity_t *attacker, int damage, int meansOfDeath );
@@ -551,11 +639,24 @@ void DropPortalDestination( gentity_t *ent );
 //
 qboolean LogAccuracyHit( gentity_t *target, gentity_t *attacker );
 void CalcMuzzlePoint ( gentity_t *ent, vec3_t forward, vec3_t right, vec3_t up, vec3_t muzzlePoint );
-void SnapVectorTowards( vec3_t v, vec3_t to );
+//unlagged - attack prediction #3
+// we're making this available to both games
+//void SnapVectorTowards( vec3_t v, vec3_t to );
+//unlagged - attack prediction #3
 qboolean CheckGauntletAttack( gentity_t *ent );
 void Weapon_HookFree (gentity_t *ent);
 void Weapon_HookThink (gentity_t *ent);
 
+//unlagged - g_unlagged.c
+void G_ResetHistory( gentity_t *ent );
+void G_StoreHistory( gentity_t *ent );
+void G_TimeShiftAllClients( int time, gentity_t *skip );
+void G_UnTimeShiftAllClients( gentity_t *skip );
+void G_DoTimeShiftFor( gentity_t *ent );
+void G_UndoTimeShiftFor( gentity_t *ent );
+void G_UnTimeShiftClient( gentity_t *client );
+void G_PredictPlayerMove( gentity_t *ent, float frametime );
+//unlagged - g_unlagged.c
 
 //
 // g_client.c
@@ -724,6 +825,9 @@ extern	vmCvar_t	g_motd;
 extern	vmCvar_t	g_warmup;
 extern	vmCvar_t	g_doWarmup;
 extern	vmCvar_t	g_blood;
+extern	vmCvar_t	g_oldGibs;
+extern	vmCvar_t	g_gibsMissileDirectionKnockbackWeight;
+extern	vmCvar_t	g_gibsNewEvGibPlayerParmProtocol;
 extern	vmCvar_t	g_allowVote;
 extern	vmCvar_t	g_teamAutoJoin;
 extern	vmCvar_t	g_teamForceBalance;
@@ -737,6 +841,7 @@ extern	vmCvar_t	g_cubeTimeout;
 extern	vmCvar_t	g_redteam;
 extern	vmCvar_t	g_blueteam;
 extern	vmCvar_t	g_smoothClients;
+extern	vmCvar_t	g_autoAttack;
 extern	vmCvar_t	pmove_fixed;
 extern	vmCvar_t	pmove_msec;
 extern	vmCvar_t	g_rankings;
@@ -745,6 +850,17 @@ extern	vmCvar_t	g_enableBreath;
 extern	vmCvar_t	g_singlePlayer;
 extern	vmCvar_t	g_proxMineTimeout;
 extern	vmCvar_t	g_localTeamPref;
+//unlagged - server options
+// some new server-side variables
+extern	vmCvar_t	g_delagHitscan;
+extern	vmCvar_t	g_unlaggedVersion;
+extern	vmCvar_t	g_truePing;
+// server admins can adjust this if they *believe* the lightning 
+// gun is too powerful with lag compensation
+extern	vmCvar_t	g_lightningDamage;
+// this is for convenience - using "sv_fps.integer" is nice :)
+extern	vmCvar_t	sv_fps;
+//unlagged - server options
 
 void	trap_Print( const char *text );
 void	trap_Error( const char *text ) __attribute__((noreturn));

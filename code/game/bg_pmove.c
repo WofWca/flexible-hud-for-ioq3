@@ -1275,8 +1275,39 @@ static void PM_CheckDuck (void)
 
 	if (pm->ps->pm_type == PM_DEAD)
 	{
-		pm->maxs[2] = -8;
-		pm->ps->viewheight = DEAD_VIEWHEIGHT;
+		// Note that we want to support vanilla clients and servers,
+		// which do not have this `if` (they always run the `else` branch).
+		// On the server we check `cg_gibsBetterCameraOnGib` userinfo
+		// before setting `viewheight = NEW_GIBBED_VIEWHEIGHT`.
+		// Vanilla servers never set `viewheight` to `NEW_GIBBED_VIEWHEIGHT`,
+		// so on the client side this check is enough.
+		if ( pm->ps->viewheight == NEW_GIBBED_VIEWHEIGHT ) {
+			// Make the camera fly farther away when getting gibbed,
+			// by making the player's bounding box smaller
+			// and lifting it off the ground,
+			// as if the player became just their head.
+			//
+			// This also fixes the issue with gibs
+			// flying parallel to the ground even when knockback direction
+			// is towards the ground:
+			// https://github.com/WofWca/quake3-better-gibs-mod/issues/3.
+			//
+			// Note that we don't need to change `groundEntityNum` and stuff,
+			// because there is `PM_GroundTraceMissed()`
+			// right after `PM_CheckDuck()`.
+			pm->mins[2] = NEW_GIBBED_MINS_Z;
+			pm->maxs[2] = NEW_GIBBED_MAXS_Z;
+			// Also make them slimmer, because they're just a piece of meat now,
+			// and not an entire body.
+			pm->mins[0] = -PLAYER_WIDTH * 3 / 4;
+			pm->mins[1] = -PLAYER_WIDTH * 3 / 4;
+			pm->maxs[0] = PLAYER_WIDTH * 3 / 4;
+			pm->maxs[1] = PLAYER_WIDTH * 3 / 4;
+		} else {
+			pm->maxs[2] = DEAD_MAXS_Z;
+			pm->ps->viewheight = DEAD_VIEWHEIGHT;
+		}
+
 		return;
 	}
 
@@ -1289,7 +1320,7 @@ static void PM_CheckDuck (void)
 		if (pm->ps->pm_flags & PMF_DUCKED)
 		{
 			// try to stand up
-			pm->maxs[2] = 32;
+			pm->maxs[2] = MAXS_Z;
 			pm->trace (&trace, pm->ps->origin, pm->mins, pm->maxs, pm->ps->origin, pm->ps->clientNum, pm->tracemask );
 			if (!trace.allsolid)
 				pm->ps->pm_flags &= ~PMF_DUCKED;
@@ -1298,12 +1329,12 @@ static void PM_CheckDuck (void)
 
 	if (pm->ps->pm_flags & PMF_DUCKED)
 	{
-		pm->maxs[2] = 16;
+		pm->maxs[2] = CROUCH_MAXS_Z;
 		pm->ps->viewheight = CROUCH_VIEWHEIGHT;
 	}
 	else
 	{
-		pm->maxs[2] = 32;
+		pm->maxs[2] = MAXS_Z;
 		pm->ps->viewheight = DEFAULT_VIEWHEIGHT;
 	}
 }
@@ -1861,14 +1892,6 @@ void PmoveSingle (pmove_t *pmove) {
 		pm->ps->eFlags &= ~EF_TALK;
 	}
 
-	// set the firing flag for continuous beam weapons
-	if ( !(pm->ps->pm_flags & PMF_RESPAWNED) && pm->ps->pm_type != PM_INTERMISSION && pm->ps->pm_type != PM_NOCLIP
-		&& ( pm->cmd.buttons & BUTTON_ATTACK ) && pm->ps->ammo[ pm->ps->weapon ] ) {
-		pm->ps->eFlags |= EF_FIRING;
-	} else {
-		pm->ps->eFlags &= ~EF_FIRING;
-	}
-
 	// clear the respawned flag if attack and use are cleared
 	if ( pm->ps->stats[STAT_HEALTH] > 0 && 
 		!( pm->cmd.buttons & (BUTTON_ATTACK | BUTTON_USE_HOLDABLE) ) ) {
@@ -1911,6 +1934,70 @@ void PmoveSingle (pmove_t *pmove) {
 	PM_UpdateViewAngles( pm->ps, &pm->cmd );
 
 	AngleVectors (pm->ps->viewangles, pml.forward, pml.right, pml.up);
+	
+	// If there is a target under the crosshair, attack.
+	// Intended for use with touchscreen controls.
+	// We trace a bunch of rays around the crosshair so that this isn't just a perfect aimbot.
+	// We start shooting when there's something roughly in the default crosshair circle.
+	// We add a small delay so that the user needs to have some aiming skill to keep opponents in their crosshairs for longer than one frame.
+	if ( pm->autoAttack ) {
+		vec3_t muzzle, start, end, movedEnd;
+		trace_t trace;
+		int i;
+		int hitSomething = 0;
+		float spreads[9][2] = {
+			{0.0f, 0.0f },
+			{1.f, 0.f },
+			{-1.f, 0.f },
+			{0.f, -1.f },
+			{0.f, 1.f},
+			{0.707f, 0.707f},
+			{-0.707f, 0.707f},
+			{0.707f, -0.707f},
+			{-0.707f, -0.707f},
+		};
+
+		// TODO: different firing patterns for different weapons? e.g. rocket launcher activates if shooting below target's feet
+		// TODO: lead moving targets?
+		VectorCopy(pm->ps->origin, muzzle);
+		muzzle[2] += pm->ps->viewheight;
+		VectorCopy(muzzle, start);
+		VectorMA( start, 8192, pml.forward, end );
+
+		for (i = 0; i < sizeof(spreads) / sizeof(spreads[0]); i++) {
+			VectorCopy(end, movedEnd);
+			VectorMA( movedEnd, 500.f*spreads[i][0], pml.right, movedEnd );
+			VectorMA( movedEnd, 500.f*spreads[i][1], pml.up, movedEnd );
+			pm->trace(&trace, start, NULL, NULL, movedEnd, pm->ps->clientNum, MASK_PLAYERSOLID | CONTENTS_CORPSE);
+			if (trace.entityNum < MAX_CLIENTS && trace.entityNum != ENTITYNUM_NONE) {
+				hitSomething = 1;
+				if (pm->autoAttackTimer == 0) {
+					// Start shooting `autoAttackDelay` ms after we hit something
+					pm->autoAttackTimer = pm->autoAttackDelay;
+				}
+				break;
+			}
+		}
+
+		if (pm->autoAttackTimer > 0) {
+			if (pm->autoAttackTimer == AUTOATTACK_KEEPSHOOTING || (pm->autoAttackTimer -= pml.msec) <= 0) {
+				// Shoot at least once when the timer expires. If there's still something in the
+				// crosshairs now, set timer to AUTOATTACK_KEEPSHOOTING to keep shooting until it's gone.
+				pm->cmd.buttons |= BUTTON_ATTACK;
+				pm->autoAttackTimer = hitSomething ? AUTOATTACK_KEEPSHOOTING : 0;
+			}
+		}
+	}
+
+
+	// set the firing flag for continuous beam weapons
+	if ( !(pm->ps->pm_flags & PMF_RESPAWNED) && pm->ps->pm_type != PM_INTERMISSION && pm->ps->pm_type != PM_NOCLIP
+		&& ( pm->cmd.buttons & BUTTON_ATTACK ) && pm->ps->ammo[ pm->ps->weapon ] ) {
+		pm->ps->eFlags |= EF_FIRING;
+	} else {
+		pm->ps->eFlags &= ~EF_FIRING;
+	}
+
 
 	if ( pm->cmd.upmove < 10 ) {
 		// not holding jump

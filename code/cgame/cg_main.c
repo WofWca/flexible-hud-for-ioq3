@@ -1,6 +1,7 @@
 /*
 ===========================================================================
 Copyright (C) 1999-2005 Id Software, Inc.
+Some portions Copyright (C) 2006 Neil Toronto.
 
 This file is part of Quake III Arena source code.
 
@@ -99,6 +100,14 @@ vmCvar_t	cg_bobroll;
 vmCvar_t	cg_swingSpeed;
 vmCvar_t	cg_shadows;
 vmCvar_t	cg_gibs;
+vmCvar_t	cg_oldGibs;
+vmCvar_t	cg_gibsInheritPlayerVelocity;
+vmCvar_t	cg_gibsExtraRandomVelocity;
+vmCvar_t	cg_gibsRandomVelocityFromKnockback;
+vmCvar_t	cg_gibsExtraVerticalVelocity;
+vmCvar_t	cg_gibsBounceFactor;
+vmCvar_t	cg_gibsRotationFactor;
+vmCvar_t	cg_gibsBetterCameraOnGib;
 vmCvar_t	cg_drawTimer;
 vmCvar_t	cg_drawFPS;
 vmCvar_t	cg_drawSnapshot;
@@ -132,6 +141,8 @@ vmCvar_t	cg_noPlayerAnims;
 vmCvar_t	cg_showmiss;
 vmCvar_t	cg_footsteps;
 vmCvar_t	cg_addMarks;
+vmCvar_t	cg_bounceMarksMinImpactSpeed;
+vmCvar_t	cg_bounceSoundMinImpactSpeed;
 vmCvar_t	cg_brassTime;
 vmCvar_t	cg_viewsize;
 vmCvar_t	cg_drawGun;
@@ -172,7 +183,11 @@ vmCvar_t	cg_noVoiceText;
 #endif
 vmCvar_t	cg_hudFiles;
 vmCvar_t 	cg_scorePlum;
-vmCvar_t 	cg_smoothClients;
+//unlagged - smooth clients #2
+// this is done server-side now
+//vmCvar_t 	cg_smoothClients;
+//unlagged - smooth clients #2
+vmCvar_t 	cg_autoAttack;
 vmCvar_t	pmove_fixed;
 //vmCvar_t	cg_pmove_fixed;
 vmCvar_t	pmove_msec;
@@ -207,6 +222,19 @@ vmCvar_t	cg_recordSPDemo;
 vmCvar_t	cg_recordSPDemoName;
 vmCvar_t	cg_obeliskRespawnDelay;
 #endif
+//unlagged - client options
+vmCvar_t	cg_delag;
+vmCvar_t	cg_debugDelag;
+vmCvar_t	cg_drawBBox;
+vmCvar_t	cg_cmdTimeNudge;
+vmCvar_t	sv_fps;
+vmCvar_t	cg_projectileNudge;
+vmCvar_t	cg_optimizePrediction;
+vmCvar_t	cl_timeNudge;
+vmCvar_t	cg_latentSnaps;
+vmCvar_t	cg_latentCmds;
+vmCvar_t	cg_plOut;
+//unlagged - client options
 
 typedef struct {
 	vmCvar_t	*vmCvar;
@@ -223,7 +251,15 @@ static cvarTable_t cvarTable[] = {
 	{ &cg_fov, "cg_fov", "90", CVAR_ARCHIVE },
 	{ &cg_viewsize, "cg_viewsize", "100", CVAR_ARCHIVE },
 	{ &cg_shadows, "cg_shadows", "1", CVAR_ARCHIVE  },
-	{ &cg_gibs, "cg_gibs", "1", CVAR_ARCHIVE  },
+	{ &cg_gibs, "cg_gibs", "1.0", CVAR_ARCHIVE  },
+	{ &cg_oldGibs, "cg_oldGibs", "0", CVAR_ARCHIVE  },
+	{ &cg_gibsInheritPlayerVelocity, "cg_gibsInheritPlayerVelocity", "1.0", CVAR_ARCHIVE  },
+	{ &cg_gibsExtraRandomVelocity, "cg_gibsExtraRandomVelocity", "175", CVAR_ARCHIVE  },
+	{ &cg_gibsRandomVelocityFromKnockback, "cg_gibsRandomVelocityFromKnockback", "0.15", CVAR_ARCHIVE  },
+	{ &cg_gibsExtraVerticalVelocity, "cg_gibsExtraVerticalVelocity", "150", CVAR_ARCHIVE  },
+	{ &cg_gibsBounceFactor, "cg_gibsBounceFactor", "0.4", CVAR_ARCHIVE  },
+	{ &cg_gibsRotationFactor, "cg_gibsRotationFactor", "1.0", CVAR_ARCHIVE  },
+	{ &cg_gibsBetterCameraOnGib, "cg_gibsBetterCameraOnGib", "1", CVAR_USERINFO | CVAR_ARCHIVE  },
 	{ &cg_draw2D, "cg_draw2D", "1", CVAR_ARCHIVE  },
 	{ &cg_drawStatus, "cg_drawStatus", "1", CVAR_ARCHIVE  },
 	{ &cg_drawTimer, "cg_drawTimer", "0", CVAR_ARCHIVE  },
@@ -251,6 +287,9 @@ static cvarTable_t cvarTable[] = {
 	{ &cg_brassTime, "cg_brassTime", "2500", CVAR_ARCHIVE },
 	{ &cg_simpleItems, "cg_simpleItems", "0", CVAR_ARCHIVE },
 	{ &cg_addMarks, "cg_marks", "1", CVAR_ARCHIVE },
+	// Note that ~290 corresponds to a free fall with no bounce from player height.
+	{ &cg_bounceMarksMinImpactSpeed, "cg_bounceMarksMinImpactSpeed", "350", CVAR_ARCHIVE },
+	{ &cg_bounceSoundMinImpactSpeed, "cg_bounceSoundMinImpactSpeed", "450", CVAR_ARCHIVE },
 	{ &cg_lagometer, "cg_lagometer", "1", CVAR_ARCHIVE },
 	{ &cg_railTrailTime, "cg_railTrailTime", "400", CVAR_ARCHIVE  },
 	{ &cg_gun_x, "cg_gunX", "0", CVAR_CHEAT },
@@ -322,7 +361,12 @@ static cvarTable_t cvarTable[] = {
 	{ &cg_timescaleFadeSpeed, "cg_timescaleFadeSpeed", "0", 0},
 	{ &cg_timescale, "timescale", "1", 0},
 	{ &cg_scorePlum, "cg_scorePlums", "1", CVAR_USERINFO | CVAR_ARCHIVE},
-	{ &cg_smoothClients, "cg_smoothClients", "0", CVAR_USERINFO | CVAR_ARCHIVE},
+//unlagged - smooth clients #2
+// this is done server-side now
+//	{ &cg_smoothClients, "cg_smoothClients", "0", CVAR_USERINFO | CVAR_ARCHIVE},
+//unlagged - smooth clients #2
+	// TODO: actually detect touchscreen controls and enable this only if they are being used currently, instead of with a cvar
+	{ &cg_autoAttack, "cg_autoAttack", "0", CVAR_USERINFO},
 	{ &cg_cameraMode, "com_cameraMode", "0", CVAR_CHEAT},
 
 	{ &pmove_fixed, "pmove_fixed", "0", CVAR_SYSTEMINFO},
@@ -336,6 +380,20 @@ static cvarTable_t cvarTable[] = {
 	{ &cg_oldRail, "cg_oldRail", "1", CVAR_ARCHIVE},
 	{ &cg_oldRocket, "cg_oldRocket", "1", CVAR_ARCHIVE},
 	{ &cg_oldPlasma, "cg_oldPlasma", "1", CVAR_ARCHIVE},
+//unlagged - client options
+	{ &cg_delag, "cg_delag", "1", CVAR_ARCHIVE | CVAR_USERINFO },
+	{ &cg_debugDelag, "cg_debugDelag", "0", CVAR_USERINFO | CVAR_CHEAT },
+	{ &cg_drawBBox, "cg_drawBBox", "0", CVAR_CHEAT },
+	{ &cg_cmdTimeNudge, "cg_cmdTimeNudge", "0", CVAR_ARCHIVE | CVAR_USERINFO },
+	// this will be automagically copied from the server
+	{ &sv_fps, "sv_fps", "20", 0 },
+	{ &cg_projectileNudge, "cg_projectileNudge", "0", CVAR_ARCHIVE },
+	{ &cg_optimizePrediction, "cg_optimizePrediction", "1", CVAR_ARCHIVE },
+	{ &cl_timeNudge, "cl_timeNudge", "0", CVAR_ARCHIVE },
+	{ &cg_latentSnaps, "cg_latentSnaps", "0", CVAR_USERINFO | CVAR_CHEAT },
+	{ &cg_latentCmds, "cg_latentCmds", "0", CVAR_USERINFO | CVAR_CHEAT },
+	{ &cg_plOut, "cg_plOut", "0", CVAR_USERINFO | CVAR_CHEAT },
+//unlagged - client options
 	{ &cg_trueLightning, "cg_trueLightning", "0.0", CVAR_ARCHIVE}
 //	{ &cg_pmove_fixed, "cg_pmove_fixed", "0", CVAR_USERINFO | CVAR_ARCHIVE }
 };
@@ -398,6 +456,33 @@ void CG_UpdateCvars( void ) {
 	cvarTable_t	*cv;
 
 	for ( i = 0, cv = cvarTable ; i < cvarTableSize ; i++, cv++ ) {
+//unlagged - client options
+		// clamp the value between 0 and 999
+		// negative values would suck - people could conceivably shoot other
+		// players *long* after they had left the area, on purpose
+		if ( cv->vmCvar == &cg_cmdTimeNudge ) {
+			CG_Cvar_ClampInt( cv->cvarName, cv->vmCvar, 0, 999 );
+		}
+		// cl_timenudge less than -50 or greater than 50 doesn't actually
+		// do anything more than -50 or 50 (actually the numbers are probably
+		// closer to -30 and 30, but 50 is nice and round-ish)
+		// might as well not feed the myth, eh?
+		else if ( cv->vmCvar == &cl_timeNudge ) {
+			CG_Cvar_ClampInt( cv->cvarName, cv->vmCvar, -50, 50 );
+		}
+		// don't let this go too high - no point
+		else if ( cv->vmCvar == &cg_latentSnaps ) {
+			CG_Cvar_ClampInt( cv->cvarName, cv->vmCvar, 0, 10 );
+		}
+		// don't let this get too large
+		else if ( cv->vmCvar == &cg_latentCmds ) {
+			CG_Cvar_ClampInt( cv->cvarName, cv->vmCvar, 0, MAX_LATENT_CMDS - 1 );
+		}
+		// no more than 100% packet loss
+		else if ( cv->vmCvar == &cg_plOut ) {
+			CG_Cvar_ClampInt( cv->cvarName, cv->vmCvar, 0, 100 );
+		}
+//unlagged - client options
 		trap_Cvar_Update( cv->vmCvar );
 	}
 
@@ -1969,6 +2054,7 @@ void CG_Init( int serverMessageNum, int serverCommandSequence, int clientNum ) {
 	cgs.levelStartTime = atoi( s );
 
 	CG_ParseServerinfo();
+	CG_ParseSysteminfo();
 
 	// load the new map
 	CG_LoadingString( "collision map" );

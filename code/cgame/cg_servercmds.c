@@ -1,6 +1,7 @@
 /*
 ===========================================================================
 Copyright (C) 1999-2005 Id Software, Inc.
+Some portions Copyright (C) 2006 Neil Toronto.
 
 This file is part of Quake III Arena source code.
 
@@ -171,6 +172,24 @@ void CG_ParseServerinfo( void ) {
 	trap_Cvar_Set("g_redTeam", cgs.redTeam);
 	Q_strncpyz( cgs.blueTeam, Info_ValueForKey( info, "g_blueTeam" ), sizeof(cgs.blueTeam) );
 	trap_Cvar_Set("g_blueTeam", cgs.blueTeam);
+
+//unlagged - server options
+	// we'll need this for deciding whether or not to predict weapon effects
+	cgs.delagHitscan = atoi( Info_ValueForKey( info, "g_delagHitscan" ) );
+	trap_Cvar_Set("g_delagHitscan", va("%i", cgs.delagHitscan));
+//unlagged - server options
+}
+
+void CG_ParseSysteminfo( void ) {
+	const char	*info;
+
+	info = CG_ConfigString( CS_SYSTEMINFO );
+
+	cgs.g_autoAttack =
+		atoi( Info_ValueForKey( info, "g_autoAttack" ) )
+		& 0x01;
+	cgs.g_gibsNewEvGibPlayerParmProtocol =
+		atoi( Info_ValueForKey( info, "g_gibsNewEvGibPlayerParmProtocol" ) );
 }
 
 /*
@@ -302,6 +321,8 @@ static void CG_ConfigStringModified( void ) {
 	// do something with it if necessary
 	if ( num == CS_MUSIC ) {
 		CG_StartMusic();
+	} else if ( num == CS_SYSTEMINFO ) {
+		CG_ParseSysteminfo();
 	} else if ( num == CS_SERVERINFO ) {
 		CG_ParseServerinfo();
 	} else if ( num == CS_WARMUP ) {

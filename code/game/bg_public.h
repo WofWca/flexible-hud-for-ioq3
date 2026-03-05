@@ -46,10 +46,22 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #define	VOTE_TIME			30000	// 30 seconds before vote times out
 
+#define PLAYER_WIDTH		15
 #define	MINS_Z				-24
+#define MAXS_Z				32
 #define	DEFAULT_VIEWHEIGHT	26
+#define CROUCH_MAXS_Z		16
 #define CROUCH_VIEWHEIGHT	12
+#define DEAD_MAXS_Z			-8
 #define	DEAD_VIEWHEIGHT		-16
+// Make sure to keep `mins[2]` negative so that player origin doesn't sink
+// into the ground, to guard against weird behavior
+// like sounds not being played (because they're "behind the wall")
+// or something.
+#define	NEW_GIBBED_MINS_Z		-2
+#define NEW_GIBBED_HEIGHT_DIFF	NEW_GIBBED_MINS_Z - MINS_Z
+#define	NEW_GIBBED_MAXS_Z		DEAD_MAXS_Z + NEW_GIBBED_HEIGHT_DIFF
+#define	NEW_GIBBED_VIEWHEIGHT	DEAD_VIEWHEIGHT + NEW_GIBBED_HEIGHT_DIFF
 
 //
 // config strings are a general means of communicating variable length strings
@@ -156,6 +168,11 @@ typedef enum {
 
 #define	PMF_ALL_TIMES	(PMF_TIME_WATERJUMP|PMF_TIME_LAND|PMF_TIME_KNOCKBACK)
 
+// pmove->autoAttack*
+#define AUTOATTACK_DELAY_MS				32
+#define AUTOATTACK_CLIENT_EXTRA_DELAY	20
+#define AUTOATTACK_KEEPSHOOTING			INT_MAX // special timer value
+
 #define	MAXTOUCH	32
 typedef struct {
 	// state (in / out)
@@ -185,6 +202,23 @@ typedef struct {
 	int			pmove_fixed;
 	int			pmove_msec;
 
+	qboolean	autoAttack;
+	// `Pmove` will read and write this.
+	int			autoAttackTimer;
+	// For clients this should have a greater value than for the server,
+	// to reduce the amount of predicted shots
+	// that don't actually happen on the server.
+	// The difference should probably be equal to the "true" ping
+	// (i.e. rougly ping + delay between sv_fps frames).
+	//
+	// The downsides of not "shooting" client-side are that
+	// the lightning gun keeps playing the "start firing" sound
+	// and that the machinegun barrel doesn't spin.
+	// But if we predict "shooting" while not actually shooting,
+	// then it gets quite annoying -
+	// it looks like we're firing a shot every frame or so.
+	int			autoAttackDelay;
+
 	// callbacks to test the world
 	// these will be different functions during game and cgame
 	void		(*trace)( trace_t *results, const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, int passEntityNum, int contentMask );
@@ -196,6 +230,13 @@ void PM_UpdateViewAngles( playerState_t *ps, const usercmd_t *cmd );
 void Pmove (pmove_t *pmove);
 
 //===================================================================================
+
+#define COMBAT_PLAYER_MASS 200
+// A divisor of knockback speed, to fit it into one byte.
+// By dividing by 8 we can represent a speed of up to (255 * 8) = 2040.
+// For comparison, with `g_knockback` of 1000 and `MAX_KNOCKBACK` of 200
+// the max knockback speed in most situations is 1000.
+#define COMBAT_EV_GIB_PLAYER_ARG_DIVISOR 8
 
 
 // player_state->stats[] indexes

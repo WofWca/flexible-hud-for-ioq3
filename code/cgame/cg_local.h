@@ -1,6 +1,7 @@
 /*
 ===========================================================================
 Copyright (C) 1999-2005 Id Software, Inc.
+Some portions Copyright (C) 2006 Neil Toronto.
 
 This file is part of Quake III Arena source code.
 
@@ -58,7 +59,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define	MAX_STEP_CHANGE		32
 
 #define	MAX_VERTS_ON_POLY	10
-#define	MAX_MARK_POLYS		256
+#define	MAX_MARK_POLYS		1024
 
 #define STAT_MINUS			10	// num frame for '-' stats digit
 
@@ -447,6 +448,10 @@ typedef struct {
 // occurs, and they will have visible effects for #define STEP_TIME or whatever msec after
 
 #define MAX_PREDICTED_EVENTS	16
+
+//unlagged - optimized prediction
+#define NUM_SAVED_STATES (CMD_BACKUP + 2)
+//unlagged - optimized prediction
  
 typedef struct {
 	int			clientFrame;		// incremented each frame
@@ -641,6 +646,20 @@ typedef struct {
 	char			testModelName[MAX_QPATH];
 	qboolean		testGun;
 
+//unlagged - optimized prediction
+	int			lastPredictedCommand;
+	int			lastServerTime;
+	playerState_t savedPmoveStates[NUM_SAVED_STATES];
+	int			stateHead, stateTail;
+//unlagged - optimized prediction
+	// This is used in `Pmove` and it should match the value of
+	// `gclient_t.autoAttackTimer`.
+	//
+	// It would be better to have this on `playerState_t`
+	// so that the server would tell clients the "true" value,
+	// but that would break network compatibility with vanilla engines
+	// and servers.
+	int autoAttackTimer;
 } cg_t;
 
 
@@ -1019,6 +1038,10 @@ typedef struct {
 	char			redTeam[MAX_QPATH];
 	char			blueTeam[MAX_QPATH];
 
+	// parsed from systeminfo
+	int				g_gibsNewEvGibPlayerParmProtocol;
+	qboolean		g_autoAttack;
+
 	int				voteTime;
 	int				voteYes;
 	int				voteNo;
@@ -1078,6 +1101,10 @@ typedef struct {
 	// media
 	cgMedia_t		media;
 
+//unlagged - client options
+	// this will be set to the server's g_delagHitscan
+	int				delagHitscan;
+//unlagged - client options
 } cgs_t;
 
 //==============================================================================
@@ -1098,6 +1125,14 @@ extern	vmCvar_t		cg_bobroll;
 extern	vmCvar_t		cg_swingSpeed;
 extern	vmCvar_t		cg_shadows;
 extern	vmCvar_t		cg_gibs;
+extern	vmCvar_t		cg_oldGibs;
+extern	vmCvar_t		cg_gibsInheritPlayerVelocity;
+extern	vmCvar_t		cg_gibsExtraRandomVelocity;
+extern	vmCvar_t		cg_gibsRandomVelocityFromKnockback;
+extern	vmCvar_t		cg_gibsExtraVerticalVelocity;
+extern	vmCvar_t		cg_gibsBounceFactor;
+extern	vmCvar_t		cg_gibsRotationFactor;
+extern	vmCvar_t		cg_gibsBetterCameraOnGib;
 extern	vmCvar_t		cg_drawTimer;
 extern	vmCvar_t		cg_drawFPS;
 extern	vmCvar_t		cg_drawSnapshot;
@@ -1134,6 +1169,8 @@ extern	vmCvar_t		cg_noPlayerAnims;
 extern	vmCvar_t		cg_showmiss;
 extern	vmCvar_t		cg_footsteps;
 extern	vmCvar_t		cg_addMarks;
+extern	vmCvar_t		cg_bounceMarksMinImpactSpeed;
+extern	vmCvar_t		cg_bounceSoundMinImpactSpeed;
 extern	vmCvar_t		cg_brassTime;
 extern	vmCvar_t		cg_gun_frame;
 extern	vmCvar_t		cg_gun_x;
@@ -1171,7 +1208,11 @@ extern	vmCvar_t		cg_noVoiceChats;
 extern	vmCvar_t		cg_noVoiceText;
 #endif
 extern  vmCvar_t		cg_scorePlum;
-extern	vmCvar_t		cg_smoothClients;
+//unlagged - smooth clients #2
+// this is done server-side now
+//extern	vmCvar_t		cg_smoothClients;
+//unlagged - smooth clients #2
+extern	vmCvar_t		cg_autoAttack;
 extern	vmCvar_t		pmove_fixed;
 extern	vmCvar_t		pmove_msec;
 //extern	vmCvar_t		cg_pmove_fixed;
@@ -1204,6 +1245,26 @@ extern  vmCvar_t		cg_recordSPDemo;
 extern  vmCvar_t		cg_recordSPDemoName;
 extern	vmCvar_t		cg_obeliskRespawnDelay;
 #endif
+
+//unlagged - client options
+extern	vmCvar_t		cg_delag;
+extern	vmCvar_t		cg_debugDelag;
+extern	vmCvar_t		cg_drawBBox;
+extern	vmCvar_t		cg_cmdTimeNudge;
+extern	vmCvar_t		sv_fps;
+extern	vmCvar_t		cg_projectileNudge;
+extern	vmCvar_t		cg_optimizePrediction;
+extern	vmCvar_t		cl_timeNudge;
+extern	vmCvar_t		cg_latentSnaps;
+extern	vmCvar_t		cg_latentCmds;
+extern	vmCvar_t		cg_plOut;
+//unlagged - client options
+
+//unlagged - cg_unlagged.c
+void CG_PredictWeaponEffects( centity_t *cent );
+void CG_AddBoundingBox( centity_t *cent );
+qboolean CG_Cvar_ClampInt( const char *name, vmCvar_t *vmCvar, int min, int max );
+//unlagged - cg_unlagged.c
 
 //
 // cg_main.c
@@ -1452,7 +1513,10 @@ void CG_LightningBoltBeam( vec3_t start, vec3_t end );
 #endif
 void CG_ScorePlum( int client, vec3_t org, int score );
 
-void CG_GibPlayer( vec3_t playerOrigin );
+void CG_GibPlayer( const vec3_t playerOrigin, const vec3_t playerAngles,
+				const vec3_t playerVelocity, const int knockbackSpeed,
+				const lerpFrame_t *bodyAnimation, const int randSeed );
+void CG_GibPlayerOld( vec3_t playerOrigin );
 void CG_BigExplode( vec3_t playerOrigin );
 
 void CG_Bleed( vec3_t origin, int entityNum );
@@ -1465,6 +1529,9 @@ localEntity_t *CG_MakeExplosion( vec3_t origin, vec3_t dir,
 // cg_snapshot.c
 //
 void CG_ProcessSnapshots( void );
+//unlagged - early transitioning
+void CG_TransitionEntity( centity_t *cent );
+//unlagged - early transitioning
 
 //
 // cg_info.c
@@ -1491,6 +1558,7 @@ void CG_InitConsoleCommands( void );
 //
 void CG_ExecuteNewServerCommands( int latestSequence );
 void CG_ParseServerinfo( void );
+void CG_ParseSysteminfo( void );
 void CG_SetConfigValues( void );
 void CG_ShaderStateChanged(void);
 #ifdef MISSIONPACK
